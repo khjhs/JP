@@ -113,6 +113,8 @@
     <div class="actions">
       <button id="transformBtn" type="button">轉換成學習內容</button>
       <button id="readAllBtn" type="button" class="secondary" disabled>全部日文跟讀</button>
+      <button id="pauseBtn" type="button" class="secondary" disabled>暫停</button>
+      <button id="stopBtn" type="button" class="secondary" disabled>停止</button>
     </div>
 
     <p id="speechStatus" class="status">語音狀態：載入中...</p>
@@ -123,12 +125,22 @@
     const sourceText = document.getElementById('sourceText');
     const transformBtn = document.getElementById('transformBtn');
     const readAllBtn = document.getElementById('readAllBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stopBtn = document.getElementById('stopBtn');
     const result = document.getElementById('result');
     const speechStatus = document.getElementById('speechStatus');
 
     const speech = window.speechSynthesis;
     let japaneseVoice = null;
     let parsedData = null;
+    let isSpeaking = false;
+
+    // ── helper fields to skip in new-format content ─────────────────────────
+    const SKIP_PREFIXES = [
+      '頁面標題：', '主題場景：', '課程簡介：',
+      '按鈕：', '評分欄位：', '老師示範提示：', '評分重點：'
+    ];
+    const SKIP_SECTIONS = new Set(['網頁互動設計', '每張句卡建議流程：', '評分結果建議顯示：']);
 
     function normalizeLines(raw) {
       return raw
@@ -151,59 +163,96 @@
       let pendingQuestion = '';
 
       lines.forEach((line) => {
-        if (!data.lessonTitle && /^第.+課[:：]/.test(line)) {
-          data.lessonTitle = line;
-          return;
-        }
-
-        if (line === '小練習') {
+        // ── section switches (checked first regardless of current mode) ──
+        if (line === '小練習' || line === '今日小測驗') {
           mode = 'practice';
           currentPhrase = null;
           return;
         }
-
         if (line === '今日跟讀順序') {
           mode = 'routine';
           currentPhrase = null;
           return;
         }
+        if (SKIP_SECTIONS.has(line)) {
+          mode = 'ignore';
+          return;
+        }
+        if (mode === 'ignore') return;
 
-        const phraseMatch = line.match(/^(\d+)\.\s*(.+)$/);
-        if (mode === 'phrases' && phraseMatch) {
-          currentPhrase = {
-            no: phraseMatch[1],
-            japanese: phraseMatch[2],
-            kana: '',
-            romaji: '',
-            chinese: '',
-            situation: '',
-            focus: '',
-            commonError: ''
-          };
-          data.phrases.push(currentPhrase);
+        // ── lesson title (both formats) ──────────────────────────────────
+        if (!data.lessonTitle && /^第\s*.+\s*課[:：]/.test(line)) {
+          data.lessonTitle = line;
           return;
         }
 
-        if (mode === 'phrases' && currentPhrase) {
-          if (line.startsWith('假名：')) currentPhrase.kana = line.replace('假名：', '').trim();
-          else if (line.startsWith('羅馬拼音：')) currentPhrase.romaji = line.replace('羅馬拼音：', '').trim();
-          else if (line.startsWith('中文：')) currentPhrase.chinese = line.replace('中文：', '').trim();
-          else if (line.startsWith('使用情境：')) currentPhrase.situation = line.replace('使用情境：', '').trim();
-          else if (line.startsWith('跟讀重點：')) currentPhrase.focus = line.replace('跟讀重點：', '').trim();
-          else if (line.startsWith('常見錯誤：')) currentPhrase.commonError = line.replace('常見錯誤：', '').trim();
+        // ── skip meta-only lines in new format ───────────────────────────
+        if (SKIP_PREFIXES.some((p) => line.startsWith(p))) return;
+
+        // ── phrase mode ──────────────────────────────────────────────────
+        if (mode === 'phrases') {
+          // New format: 句卡 N
+          const cardMatch = line.match(/^句卡\s*(\d+)/);
+          if (cardMatch) {
+            currentPhrase = {
+              no: cardMatch[1],
+              japanese: '',
+              kana: '',
+              romaji: '',
+              chinese: '',
+              situation: '',
+              focus: '',
+              commonError: ''
+            };
+            data.phrases.push(currentPhrase);
+            return;
+          }
+
+          // Old format: "1. 日文句子"
+          const oldMatch = line.match(/^(\d+)\.\s*(.+)$/);
+          if (oldMatch) {
+            currentPhrase = {
+              no: oldMatch[1],
+              japanese: oldMatch[2],
+              kana: '',
+              romaji: '',
+              chinese: '',
+              situation: '',
+              focus: '',
+              commonError: ''
+            };
+            data.phrases.push(currentPhrase);
+            return;
+          }
+
+          // Field lines
+          if (currentPhrase) {
+            if (line.startsWith('日文：'))       currentPhrase.japanese    = line.slice(3).trim();
+            else if (line.startsWith('假名：'))   currentPhrase.kana        = line.slice(3).trim();
+            else if (line.startsWith('羅馬拼音：')) currentPhrase.romaji    = line.slice(5).trim();
+            else if (line.startsWith('中文：'))   currentPhrase.chinese     = line.slice(3).trim();
+            else if (line.startsWith('使用情境：')) currentPhrase.situation  = line.slice(5).trim();
+            else if (line.startsWith('跟讀重點：')) currentPhrase.focus      = line.slice(5).trim();
+            else if (line.startsWith('跟讀提示：')) currentPhrase.focus      = line.slice(5).trim();
+            else if (line.startsWith('常見錯誤：')) currentPhrase.commonError = line.slice(5).trim();
+          }
           return;
         }
 
+        // ── practice mode ────────────────────────────────────────────────
         if (mode === 'practice') {
           if (line.startsWith('答案：')) {
-            data.practice.push({ question: pendingQuestion, answer: line.replace('答案：', '').trim() });
-            pendingQuestion = '';
+            if (pendingQuestion) {
+              data.practice.push({ question: pendingQuestion, answer: line.slice(3).trim() });
+              pendingQuestion = '';
+            }
           } else {
             pendingQuestion = line;
           }
           return;
         }
 
+        // ── routine mode ─────────────────────────────────────────────────
         if (mode === 'routine') {
           data.routine.push(line);
         }
@@ -229,7 +278,7 @@
               ${createMeta('羅馬拼音：', phrase.romaji)}
               ${createMeta('中文：', phrase.chinese)}
               ${createMeta('使用情境：', phrase.situation)}
-              ${createMeta('跟讀重點：', phrase.focus)}
+              ${createMeta('跟讀重點／提示：', phrase.focus)}
               ${createMeta('常見錯誤：', phrase.commonError)}
               <button type="button" data-speak="${encodeURIComponent(phrase.japanese)}">播放此句日文</button>
             </article>
@@ -238,7 +287,7 @@
         .join('');
 
       const practiceHtml = data.practice.length
-        ? `<div class="block"><h2>小練習</h2>${data.practice
+        ? `<div class="block"><h2>練習題</h2>${data.practice
             .map(
               (item) => `<div class="item"><p class="practice-q">${item.question}</p><p class="meta"><strong>答案：</strong>${item.answer}</p></div>`
             )
@@ -270,6 +319,16 @@
       });
     }
 
+    // ── speech helpers ───────────────────────────────────────────────────────
+    function setSpeakingState(speaking) {
+      isSpeaking = speaking;
+      pauseBtn.disabled = !speaking;
+      stopBtn.disabled = !speaking;
+      if (!speaking) {
+        pauseBtn.textContent = '暫停';
+      }
+    }
+
     function speakJapanese(text) {
       if (!speech) {
         speechStatus.textContent = '語音狀態：此瀏覽器不支援語音播放。';
@@ -280,8 +339,28 @@
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'ja-JP';
       if (japaneseVoice) utterance.voice = japaneseVoice;
+      utterance.onstart = () => setSpeakingState(true);
+      utterance.onend = () => setSpeakingState(false);
+      utterance.onerror = () => setSpeakingState(false);
       speech.speak(utterance);
     }
+
+    pauseBtn.addEventListener('click', () => {
+      if (!speech) return;
+      if (speech.paused) {
+        speech.resume();
+        pauseBtn.textContent = '暫停';
+      } else if (speech.speaking) {
+        speech.pause();
+        pauseBtn.textContent = '繼續';
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!speech) return;
+      speech.cancel();
+      setSpeakingState(false);
+    });
 
     function pickJapaneseVoice() {
       if (!speech) {
@@ -305,12 +384,27 @@
       readAllBtn.disabled = !parsedData.phrases.length;
     });
 
-    readAllBtn.addEventListener('click', async () => {
-      if (!parsedData || !parsedData.phrases.length) return;
-      for (const phrase of parsedData.phrases) {
-        speakJapanese(phrase.japanese);
-        await new Promise((resolve) => setTimeout(resolve, 1700));
+    readAllBtn.addEventListener('click', () => {
+      if (!parsedData || !parsedData.phrases.length || !speech) return;
+      speech.cancel();
+      const phrases = parsedData.phrases.filter((p) => p.japanese);
+      let index = 0;
+
+      function speakNext() {
+        if (index >= phrases.length) {
+          setSpeakingState(false);
+          return;
+        }
+        const utterance = new SpeechSynthesisUtterance(phrases[index++].japanese);
+        utterance.lang = 'ja-JP';
+        if (japaneseVoice) utterance.voice = japaneseVoice;
+        utterance.onstart = () => setSpeakingState(true);
+        utterance.onend = () => setTimeout(speakNext, 400);
+        utterance.onerror = () => setTimeout(speakNext, 400);
+        speech.speak(utterance);
       }
+
+      speakNext();
     });
 
     if (speech) {
