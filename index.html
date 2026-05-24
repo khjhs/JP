@@ -144,7 +144,7 @@
 
     function normalizeLines(raw) {
       return raw
-        .split(/\r?\n/)
+        .split(/\r\n|\r|\n/)
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
     }
@@ -162,7 +162,10 @@
       let currentPhrase = null;
       let pendingQuestion = '';
 
-      lines.forEach((line) => {
+      lines.forEach((rawLine) => {
+        // Normalize half-width label-separator colon → full-width so all
+        // startsWith / SKIP_PREFIXES checks work regardless of input source.
+        const line = rawLine.replace(/^([^\s：:][^：:]*):/m, '$1：');
         // ── section switches (checked first regardless of current mode) ──
         if (line === '小練習' || line === '今日小測驗') {
           mode = 'practice';
@@ -191,11 +194,14 @@
 
         // ── phrase mode ──────────────────────────────────────────────────
         if (mode === 'phrases') {
-          // New format: 句卡 N
-          const cardMatch = line.match(/^句卡\s*(\d+)/);
+          // New format: 句卡 N  (supports ASCII and full-width digits)
+          const cardMatch = line.match(/^句卡\s*([\d\uff10-\uff19]+)/);
           if (cardMatch) {
+            // Normalize full-width digits (１２３…) to ASCII for the card number
+            const no = cardMatch[1].replace(/[\uff10-\uff19]/g,
+              (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
             currentPhrase = {
-              no: cardMatch[1],
+              no,
               japanese: '',
               kana: '',
               romaji: '',
