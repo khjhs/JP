@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>日語學習轉換器</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #f7f9fc;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1, h2, h3 {
+      margin: 0 0 12px;
+    }
+    p {
+      margin: 0 0 12px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 280px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 12px;
+      resize: vertical;
+      line-height: 1.5;
+      box-sizing: border-box;
+      font-size: 14px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 12px 0 20px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button.secondary {
+      background: #475569;
+    }
+    button:disabled {
+      background: #94a3b8;
+      cursor: not-allowed;
+    }
+    .status {
+      margin: 0 0 12px;
+      font-size: 14px;
+      color: #334155;
+    }
+    .block {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .item {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+    .item:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+    .meta {
+      margin: 6px 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .meta strong {
+      color: #0f172a;
+    }
+    .practice-q {
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    .dialogue {
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 8px;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>日語學習內容轉換器</h1>
+    <p>把每天貼上的內容貼進下方輸入框，按「轉換」後會自動生成學習卡片。可直接部署到 GitHub Pages（github.io）。</p>
+
+    <label for="sourceText"><strong>內容輸入</strong></label>
+    <textarea id="sourceText" placeholder="請貼上課文內容..."></textarea>
+
+    <div class="actions">
+      <button id="transformBtn" type="button">轉換成學習內容</button>
+      <button id="readAllBtn" type="button" class="secondary" disabled>全部日文跟讀</button>
+    </div>
+
+    <p id="speechStatus" class="status">語音狀態：載入中...</p>
+    <section id="result"></section>
+  </main>
+
+  <script>
+    const sourceText = document.getElementById('sourceText');
+    const transformBtn = document.getElementById('transformBtn');
+    const readAllBtn = document.getElementById('readAllBtn');
+    const result = document.getElementById('result');
+    const speechStatus = document.getElementById('speechStatus');
+
+    const speech = window.speechSynthesis;
+    let japaneseVoice = null;
+    let parsedData = null;
+
+    function normalizeLines(raw) {
+      return raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    }
+
+    function parseInput(raw) {
+      const lines = normalizeLines(raw);
+      const data = {
+        lessonTitle: '',
+        phrases: [],
+        practice: [],
+        routine: []
+      };
+
+      let mode = 'phrases';
+      let currentPhrase = null;
+      let pendingQuestion = '';
+
+      lines.forEach((line) => {
+        if (!data.lessonTitle && /^第.+課[:：]/.test(line)) {
+          data.lessonTitle = line;
+          return;
+        }
+
+        if (line === '小練習') {
+          mode = 'practice';
+          currentPhrase = null;
+          return;
+        }
+
+        if (line === '今日跟讀順序') {
+          mode = 'routine';
+          currentPhrase = null;
+          return;
+        }
+
+        const phraseMatch = line.match(/^(\d+)\.\s*(.+)$/);
+        if (mode === 'phrases' && phraseMatch) {
+          currentPhrase = {
+            no: phraseMatch[1],
+            japanese: phraseMatch[2],
+            kana: '',
+            romaji: '',
+            chinese: '',
+            situation: '',
+            focus: '',
+            commonError: ''
+          };
+          data.phrases.push(currentPhrase);
+          return;
+        }
+
+        if (mode === 'phrases' && currentPhrase) {
+          if (line.startsWith('假名：')) currentPhrase.kana = line.replace('假名：', '').trim();
+          else if (line.startsWith('羅馬拼音：')) currentPhrase.romaji = line.replace('羅馬拼音：', '').trim();
+          else if (line.startsWith('中文：')) currentPhrase.chinese = line.replace('中文：', '').trim();
+          else if (line.startsWith('使用情境：')) currentPhrase.situation = line.replace('使用情境：', '').trim();
+          else if (line.startsWith('跟讀重點：')) currentPhrase.focus = line.replace('跟讀重點：', '').trim();
+          else if (line.startsWith('常見錯誤：')) currentPhrase.commonError = line.replace('常見錯誤：', '').trim();
+          return;
+        }
+
+        if (mode === 'practice') {
+          if (line.startsWith('答案：')) {
+            data.practice.push({ question: pendingQuestion, answer: line.replace('答案：', '').trim() });
+            pendingQuestion = '';
+          } else {
+            pendingQuestion = line;
+          }
+          return;
+        }
+
+        if (mode === 'routine') {
+          data.routine.push(line);
+        }
+      });
+
+      return data;
+    }
+
+    function createMeta(label, value) {
+      if (!value) return '';
+      return `<p class="meta"><strong>${label}</strong>${value}</p>`;
+    }
+
+    function render(data) {
+      const lessonTitle = data.lessonTitle || '未識別課程標題';
+
+      const phraseHtml = data.phrases
+        .map(
+          (phrase) => `
+            <article class="item">
+              <h3>${phrase.no}. ${phrase.japanese}</h3>
+              ${createMeta('假名：', phrase.kana)}
+              ${createMeta('羅馬拼音：', phrase.romaji)}
+              ${createMeta('中文：', phrase.chinese)}
+              ${createMeta('使用情境：', phrase.situation)}
+              ${createMeta('跟讀重點：', phrase.focus)}
+              ${createMeta('常見錯誤：', phrase.commonError)}
+              <button type="button" data-speak="${encodeURIComponent(phrase.japanese)}">播放此句日文</button>
+            </article>
+          `
+        )
+        .join('');
+
+      const practiceHtml = data.practice.length
+        ? `<div class="block"><h2>小練習</h2>${data.practice
+            .map(
+              (item) => `<div class="item"><p class="practice-q">${item.question}</p><p class="meta"><strong>答案：</strong>${item.answer}</p></div>`
+            )
+            .join('')}</div>`
+        : '';
+
+      const routineHtml = data.routine.length
+        ? `<div class="block"><h2>今日跟讀順序</h2>${data.routine
+            .map((line) => `<p class="meta">${line}</p>`)
+            .join('')}<div class="dialogue">${data.routine
+            .filter((line) => /^[AB]：/.test(line))
+            .join('\n')}</div></div>`
+        : '';
+
+      result.innerHTML = `
+        <div class="block">
+          <h2>${lessonTitle}</h2>
+          ${phraseHtml || '<p class="meta">沒有解析到句型資料，請確認格式。</p>'}
+        </div>
+        ${practiceHtml}
+        ${routineHtml}
+      `;
+
+      result.querySelectorAll('[data-speak]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const text = decodeURIComponent(button.getAttribute('data-speak') || '');
+          speakJapanese(text);
+        });
+      });
+    }
+
+    function speakJapanese(text) {
+      if (!speech) {
+        speechStatus.textContent = '語音狀態：此瀏覽器不支援語音播放。';
+        return;
+      }
+      if (!text) return;
+      speech.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'ja-JP';
+      if (japaneseVoice) utterance.voice = japaneseVoice;
+      speech.speak(utterance);
+    }
+
+    function pickJapaneseVoice() {
+      if (!speech) {
+        speechStatus.textContent = '語音狀態：此瀏覽器不支援語音播放。';
+        return;
+      }
+
+      const voices = speech.getVoices();
+      japaneseVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith('ja')) || null;
+
+      if (japaneseVoice) {
+        speechStatus.textContent = `語音狀態：可用（${japaneseVoice.name}）`;
+      } else {
+        speechStatus.textContent = '語音狀態：可用，但未找到日文語音，將使用系統預設語音。';
+      }
+    }
+
+    transformBtn.addEventListener('click', () => {
+      parsedData = parseInput(sourceText.value);
+      render(parsedData);
+      readAllBtn.disabled = !parsedData.phrases.length;
+    });
+
+    readAllBtn.addEventListener('click', async () => {
+      if (!parsedData || !parsedData.phrases.length) return;
+      for (const phrase of parsedData.phrases) {
+        speakJapanese(phrase.japanese);
+        await new Promise((resolve) => setTimeout(resolve, 1700));
+      }
+    });
+
+    if (speech) {
+      pickJapaneseVoice();
+      speech.onvoiceschanged = pickJapaneseVoice;
+    } else {
+      speechStatus.textContent = '語音狀態：此瀏覽器不支援語音播放。';
+    }
+  </script>
+</body>
+</html>
